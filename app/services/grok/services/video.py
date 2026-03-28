@@ -680,6 +680,20 @@ def _resolve_upscale_timing() -> str:
     return "complete"
 
 
+async def _safe_record_video_success(token_mgr, token: str):
+    try:
+        await token_mgr.record_video_success(token)
+    except Exception as e:
+        logger.warning(f"Failed to record video success stats: {e}")
+
+
+async def _safe_record_video_error(token_mgr, token: str):
+    try:
+        await token_mgr.record_video_error(token)
+    except Exception as e:
+        logger.warning(f"Failed to record video error stats: {e}")
+
+
 class _VideoChainSSEWriter:
     def __init__(self, model: str, show_think: bool):
         self.model = model
@@ -1144,6 +1158,7 @@ class VideoService:
                         finally:
                             await dl_service.close()
 
+                        await _safe_record_video_success(token_mgr, token)
                         for chunk in writer.emit_content(rendered):
                             yield chunk
                         for chunk in writer.finish():
@@ -1236,6 +1251,7 @@ class VideoService:
                     finally:
                         await dl_service.close()
 
+                    await _safe_record_video_success(token_mgr, token)
                     return {
                         "id": final_result.response_id,
                         "object": "chat.completion",
@@ -1281,6 +1297,7 @@ class VideoService:
 
                 return result
             except UpstreamException as e:
+                await _safe_record_video_error(token_mgr, token)
                 last_error = e
                 if rate_limited(e):
                     await token_mgr.mark_rate_limited(token)
@@ -1289,6 +1306,13 @@ class VideoService:
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue
+                raise
+            except asyncio.CancelledError:
+                raise
+            except ValidationException:
+                raise
+            except Exception:
+                await _safe_record_video_error(token_mgr, token)
                 raise
 
         if last_error:

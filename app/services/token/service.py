@@ -79,6 +79,18 @@ class TokenService:
         return await manager.record_fail(token, status_code, reason)
 
     @staticmethod
+    async def record_video_success(token: str) -> bool:
+        """记录视频生成成功。"""
+        manager = await TokenService._get_manager()
+        return await manager.record_video_success(token)
+
+    @staticmethod
+    async def record_video_error(token: str) -> bool:
+        """记录视频生成失败。"""
+        manager = await TokenService._get_manager()
+        return await manager.record_video_error(token)
+
+    @staticmethod
     async def add_token(token: str, pool_name: str = "ssoBasic") -> bool:
         """
         添加 Token

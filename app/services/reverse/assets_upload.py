@@ -21,6 +21,13 @@ from app.services.reverse.utils.retry import retry_on_status
 UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 
 
+def _mask_token(token: str) -> str:
+    token = (token or "").strip()
+    if len(token) <= 16:
+        return token
+    return f"{token[:8]}...{token[-8:]}"
+
+
 class AssetsUploadReverse:
     """/rest/app-chat/upload-file reverse interface."""
 
@@ -76,7 +83,7 @@ class AssetsUploadReverse:
                 )
                 if response.status_code != 200:
                     logger.error(
-                        f"AssetsUploadReverse: Upload failed, {response.status_code}",
+                        f"AssetsUploadReverse: Upload failed, {response.status_code}, token={_mask_token(token)}",
                         extra={"error_type": "UpstreamException"},
                     )
                     raise UpstreamException(
@@ -108,7 +115,7 @@ class AssetsUploadReverse:
 
             # Handle other non-upstream exceptions
             logger.error(
-                f"AssetsUploadReverse: Upload failed, {str(e)}",
+                f"AssetsUploadReverse: Upload failed, {str(e)}, token={_mask_token(token)}",
                 extra={"error_type": type(e).__name__},
             )
             raise UpstreamException(

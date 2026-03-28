@@ -43,6 +43,13 @@ def _sanitize_token_text(value) -> str:
     return token.encode("ascii", errors="ignore").decode("ascii")
 
 
+def _serialize_token_info(token) -> dict:
+    payload = token.model_dump()
+    payload["video_success_24h"] = getattr(token, "video_success_24h", 0)
+    payload["video_error_24h"] = getattr(token, "video_error_24h", 0)
+    return payload
+
+
 @router.get("/tokens", dependencies=[Depends(verify_app_key)])
 async def get_tokens():
     """获取所有 Token"""
@@ -51,7 +58,7 @@ async def get_tokens():
     mgr = await get_token_manager()
     results = {}
     for pool_name, pool in mgr.pools.items():
-        results[pool_name] = [t.model_dump() for t in pool.list()]
+        results[pool_name] = [_serialize_token_info(t) for t in pool.list()]
     consumed_mode = get_config("token.consumed_mode_enabled", False)
     return {
         "tokens": results or {},

@@ -10,7 +10,7 @@ Token 数据模型
 
 from enum import Enum
 from typing import Optional, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 from datetime import datetime
 
 
@@ -20,6 +20,7 @@ SUPER_DEFAULT_QUOTA = 140
 
 # 失败阈值
 FAIL_THRESHOLD = 5
+VIDEO_STATS_WINDOW_MS = 24 * 60 * 60 * 1000
 
 
 class TokenStatus(str, Enum):
@@ -74,6 +75,8 @@ class TokenInfo(BaseModel):
     tags: List[str] = Field(default_factory=list)
     note: str = ""
     last_asset_clear_at: Optional[int] = None
+    video_success_events: List[int] = Field(default_factory=list)
+    video_error_events: List[int] = Field(default_factory=list)
 
     @field_validator("token", mode="before")
     @classmethod
@@ -116,6 +119,48 @@ class TokenInfo(BaseModel):
         if consumed_mode:
             return True
         return self.quota > 0
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(datetime.now().timestamp() * 1000)
+
+    @staticmethod
+    def _prune_events(events: List[int], now_ms: Optional[int] = None) -> List[int]:
+        cutoff = (TokenInfo._now_ms() if now_ms is None else int(now_ms)) - VIDEO_STATS_WINDOW_MS
+        return [
+            int(ts)
+            for ts in (events or [])
+            if isinstance(ts, (int, float)) and int(ts) >= cutoff
+        ]
+
+    def prune_video_events(self, now_ms: Optional[int] = None):
+        self.video_success_events = self._prune_events(self.video_success_events, now_ms)
+        self.video_error_events = self._prune_events(self.video_error_events, now_ms)
+
+    @model_validator(mode="after")
+    def _normalize_video_events(self):
+        self.prune_video_events()
+        return self
+
+    @computed_field
+    @property
+    def video_success_24h(self) -> int:
+        return len(self._prune_events(self.video_success_events))
+
+    @computed_field
+    @property
+    def video_error_24h(self) -> int:
+        return len(self._prune_events(self.video_error_events))
+
+    def record_video_success(self, now_ms: Optional[int] = None):
+        now_ms = self._now_ms() if now_ms is None else int(now_ms)
+        self.prune_video_events(now_ms)
+        self.video_success_events.append(now_ms)
+
+    def record_video_error(self, now_ms: Optional[int] = None):
+        now_ms = self._now_ms() if now_ms is None else int(now_ms)
+        self.prune_video_events(now_ms)
+        self.video_error_events.append(now_ms)
 
     def enter_cooling(self, reset_consumed: bool = True):
         """进入冷却状态，并在新窗口开始时清空 consumed。"""

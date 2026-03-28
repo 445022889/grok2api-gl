@@ -709,6 +709,38 @@ class TokenManager:
         logger.warning(f"Token {raw_token[:10]}...: not found for rate limit marking")
         return False
 
+    async def record_video_success(self, token_str: str) -> bool:
+        """记录视频生成成功（24 小时滚动统计）。"""
+        raw_token = token_str.removeprefix("sso=")
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if token:
+                token.record_video_success()
+                self._track_token_change(token, pool.name, "usage")
+                self._schedule_save()
+                logger.info(
+                    f"Token {raw_token[:10]}...: video success +1 (24h={token.video_success_24h})"
+                )
+                return True
+        logger.warning(f"Token {raw_token[:10]}...: not found for video success record")
+        return False
+
+    async def record_video_error(self, token_str: str) -> bool:
+        """记录视频生成失败（24 小时滚动统计）。"""
+        raw_token = token_str.removeprefix("sso=")
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if token:
+                token.record_video_error()
+                self._track_token_change(token, pool.name, "usage")
+                self._schedule_save()
+                logger.info(
+                    f"Token {raw_token[:10]}...: video error +1 (24h={token.video_error_24h})"
+                )
+                return True
+        logger.warning(f"Token {raw_token[:10]}...: not found for video error record")
+        return False
+
     # ========== 管理功能 ==========
 
     async def add(self, token: str, pool_name: str = "ssoBasic") -> bool:

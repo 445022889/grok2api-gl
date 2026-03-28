@@ -453,16 +453,25 @@ class RedisStorage(BaseStorage):
                         t_data["tags"] = json_loads(t_data["tags"])
                     except Exception:
                         t_data["tags"] = []
+                for list_field in ("video_success_events", "video_error_events"):
+                    if list_field in t_data:
+                        try:
+                            parsed = json_loads(t_data[list_field])
+                            t_data[list_field] = parsed if isinstance(parsed, list) else []
+                        except Exception:
+                            t_data[list_field] = []
 
                 # 类型转换 (Redis 返回全 string)
                 for int_field in [
                     "quota",
+                    "consumed",
                     "created_at",
                     "use_count",
                     "fail_count",
                     "last_used_at",
                     "last_fail_at",
                     "last_sync_at",
+                    "last_asset_clear_at",
                 ]:
                     if t_data.get(int_field) and t_data[int_field] != "None":
                         try:
@@ -550,8 +559,9 @@ class RedisStorage(BaseStorage):
                         if not token_str:
                             continue
                         t_flat = t.copy()
-                        if "tags" in t_flat:
-                            t_flat["tags"] = json_dumps(t_flat["tags"])
+                        for list_field in ("tags", "video_success_events", "video_error_events"):
+                            if list_field in t_flat:
+                                t_flat[list_field] = json_dumps(t_flat[list_field])
                         status = t_flat.get("status")
                         if isinstance(status, str) and status.startswith(
                             "TokenStatus."
@@ -1262,6 +1272,8 @@ class SQLStorage(BaseStorage):
                             "last_fail_at=VALUES(last_fail_at), "
                             "last_fail_reason=VALUES(last_fail_reason), "
                             "last_sync_at=VALUES(last_sync_at), "
+                            "data=VALUES(data), "
+                            "data_hash=VALUES(data_hash), "
                             "updated_at=VALUES(updated_at)"
                         )
                     elif self.dialect in ("postgres", "postgresql", "pgsql"):
@@ -1284,6 +1296,8 @@ class SQLStorage(BaseStorage):
                             "last_fail_at=EXCLUDED.last_fail_at, "
                             "last_fail_reason=EXCLUDED.last_fail_reason, "
                             "last_sync_at=EXCLUDED.last_sync_at, "
+                            "data=EXCLUDED.data, "
+                            "data_hash=EXCLUDED.data_hash, "
                             "updated_at=EXCLUDED.updated_at"
                         )
                     else:

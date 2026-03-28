@@ -18,6 +18,7 @@ const byId = (id) => document.getElementById(id);
 const qsa = (selector) => document.querySelectorAll(selector);
 const DEFAULT_QUOTA_BASIC = 80;
 const DEFAULT_QUOTA_SUPER = 140;
+const VIDEO_STATS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function getDefaultQuotaForPool(pool) {
   return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
@@ -26,6 +27,15 @@ function getDefaultQuotaForPool(pool) {
 function setText(id, text) {
   const el = byId(id);
   if (el) el.innerText = text;
+}
+
+function getVideo24hCount(token, field) {
+  const direct = Number(token?.[field]);
+  if (Number.isFinite(direct)) return direct;
+  const eventField = field === 'video_success_24h' ? 'video_success_events' : 'video_error_events';
+  const events = Array.isArray(token?.[eventField]) ? token[eventField] : [];
+  const cutoff = Date.now() - VIDEO_STATS_WINDOW_MS;
+  return events.filter(ts => Number(ts) >= cutoff).length;
 }
 
 function openModal(id) {
@@ -149,7 +159,10 @@ function processTokens(data) {
       tokens.forEach(t => {
         // Normalize
         const tObj = typeof t === 'string'
-          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
+          ? {
+            token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [],
+            video_success_24h: 0, video_error_24h: 0, video_success_events: [], video_error_events: []
+          }
           : {
             token: t.token,
             status: t.status || 'active',
@@ -158,6 +171,10 @@ function processTokens(data) {
             note: t.note || '',
             fail_count: t.fail_count || 0,
             use_count: t.use_count || 0,
+            video_success_24h: Number(t.video_success_24h || 0),
+            video_error_24h: Number(t.video_error_24h || 0),
+            video_success_events: Array.isArray(t.video_success_events) ? t.video_success_events : [],
+            video_error_events: Array.isArray(t.video_error_events) ? t.video_error_events : [],
             tags: t.tags || [],
             created_at: t.created_at,
             last_used_at: t.last_used_at,
@@ -195,6 +212,8 @@ function updateStats(data) {
   let noNsfwTokens = 0;
   let chatQuota = 0;
   let totalCalls = 0;
+  let totalVideoSuccess24h = 0;
+  let totalVideoError24h = 0;
 
   flatTokens.forEach(t => {
     if (t.status === 'active') {
@@ -211,6 +230,8 @@ function updateStats(data) {
       noNsfwTokens++;
     }
     totalCalls += Number(t.use_count || 0);
+    totalVideoSuccess24h += getVideo24hCount(t, 'video_success_24h');
+    totalVideoError24h += getVideo24hCount(t, 'video_error_24h');
   });
 
   const imageQuota = Math.floor(chatQuota / 2);
@@ -236,6 +257,8 @@ function updateStats(data) {
   }
 
   setText('stat-total-calls', totalCalls.toLocaleString());
+  setText('stat-video-success-24h', totalVideoSuccess24h.toLocaleString());
+  setText('stat-video-error-24h', totalVideoError24h.toLocaleString());
 
   updateTabCounts({
     all: totalTokens,
@@ -332,6 +355,16 @@ function renderTable() {
       tdQuota.title = t('token.tableQuota');
     }
 
+    const tdVideoSuccess = document.createElement('td');
+    tdVideoSuccess.className = 'text-center font-mono text-xs text-violet-600';
+    tdVideoSuccess.innerText = getVideo24hCount(item, 'video_success_24h');
+    tdVideoSuccess.title = t('token.tableVideoSuccess24h');
+
+    const tdVideoError = document.createElement('td');
+    tdVideoError.className = 'text-center font-mono text-xs text-red-600';
+    tdVideoError.innerText = getVideo24hCount(item, 'video_error_24h');
+    tdVideoError.title = t('token.tableVideoError24h');
+
 
 
     // Note (Left)
@@ -372,6 +405,8 @@ function renderTable() {
     tr.appendChild(tdType);
     tr.appendChild(tdStatus);
     tr.appendChild(tdQuota);
+    tr.appendChild(tdVideoSuccess);
+    tr.appendChild(tdVideoError);
     tr.appendChild(tdNote);
     tr.appendChild(tdActions);
 
