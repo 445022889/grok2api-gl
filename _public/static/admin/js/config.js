@@ -10,6 +10,8 @@ const NUMERIC_FIELDS = new Set([
   'retry_budget',
   'refresh_interval_hours',
   'super_refresh_interval_hours',
+  'super_quota_refresh_interval_minutes',
+  'super_quota_refresh_threshold',
   'fail_threshold',
   'limit_mb',
   'save_delay_ms',

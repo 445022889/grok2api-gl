@@ -77,7 +77,17 @@ async def lifespan(app: FastAPI):
     if refresh_enabled:
         basic_interval = get_config("token.refresh_interval_hours", 8)
         super_interval = get_config("token.super_refresh_interval_hours", 2)
-        interval = min(basic_interval, super_interval)
+        super_quota_interval_minutes = get_config(
+            "token.super_quota_refresh_interval_minutes", 0
+        )
+        intervals = [basic_interval, super_interval]
+        try:
+            super_quota_interval_minutes = float(super_quota_interval_minutes)
+            if super_quota_interval_minutes > 0:
+                intervals.append(super_quota_interval_minutes / 60)
+        except (TypeError, ValueError):
+            pass
+        interval = min(intervals)
         scheduler = get_scheduler(interval)
         scheduler.start()
 

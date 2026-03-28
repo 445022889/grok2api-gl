@@ -3,6 +3,7 @@
 import asyncio
 from typing import Optional
 
+from app.core.config import get_config
 from app.core.logger import logger
 from app.core.storage import get_storage, StorageError, RedisStorage
 from app.services.token.manager import get_token_manager
@@ -16,13 +17,41 @@ class TokenRefreshScheduler:
         self.interval_seconds = interval_hours * 3600
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._last_super_quota_refresh_at = 0.0
+
+    @staticmethod
+    def _resolve_loop_interval_seconds(default_hours: float = 8) -> float:
+        intervals = []
+        try:
+            intervals.append(float(get_config("token.refresh_interval_hours", default_hours)) * 3600)
+        except Exception:
+            intervals.append(float(default_hours) * 3600)
+        try:
+            intervals.append(float(get_config("token.super_refresh_interval_hours", default_hours)) * 3600)
+        except Exception:
+            pass
+        try:
+            super_quota_minutes = float(
+                get_config("token.super_quota_refresh_interval_minutes", 0)
+            )
+            if super_quota_minutes > 0:
+                intervals.append(super_quota_minutes * 60)
+        except Exception:
+            pass
+        intervals = [value for value in intervals if value and value > 0]
+        if not intervals:
+            return max(60.0, float(default_hours) * 3600)
+        return max(60.0, min(intervals))
 
     async def _refresh_loop(self):
         """刷新循环"""
-        logger.info(f"Scheduler: started (interval: {self.interval_hours}h)")
+        logger.info(f"Scheduler: started (base interval: {self.interval_hours}h)")
 
         while self._running:
             try:
+                self.interval_seconds = self._resolve_loop_interval_seconds(
+                    self.interval_hours
+                )
                 storage = get_storage()
                 lock_acquired = False
                 lock = None
@@ -58,6 +87,47 @@ class TokenRefreshScheduler:
                         f"recovered={result['recovered']}, "
                         f"expired={result['expired']}"
                     )
+
+                    try:
+                        interval_minutes = float(
+                            get_config("token.super_quota_refresh_interval_minutes", 0)
+                        )
+                    except Exception:
+                        interval_minutes = 0.0
+                    try:
+                        threshold = int(
+                            get_config("token.super_quota_refresh_threshold", 500)
+                        )
+                    except Exception:
+                        threshold = 500
+
+                    now = asyncio.get_running_loop().time()
+                    should_refresh_super_quota = (
+                        interval_minutes > 0
+                        and threshold > 0
+                        and (
+                            self._last_super_quota_refresh_at <= 0
+                            or now - self._last_super_quota_refresh_at
+                            >= interval_minutes * 60
+                        )
+                    )
+                    if should_refresh_super_quota:
+                        logger.info(
+                            "Scheduler: starting super quota refresh..."
+                        )
+                        super_result = await manager.refresh_super_tokens_below_threshold(
+                            trigger="scheduler_super_quota",
+                            quota_threshold=threshold,
+                        )
+                        self._last_super_quota_refresh_at = now
+                        logger.info(
+                            f"Scheduler: super quota refresh completed - "
+                            f"checked={super_result['checked']}, "
+                            f"refreshed={super_result['refreshed']}, "
+                            f"recovered={super_result['recovered']}, "
+                            f"expired={super_result['expired']}, "
+                            f"threshold={threshold}"
+                        )
                 finally:
                     if lock is not None and lock_acquired:
                         try:

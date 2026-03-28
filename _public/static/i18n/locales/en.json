@@ -212,6 +212,8 @@
         "auto_refresh": {"title": "Auto Refresh", "desc": "Whether to enable automatic Token refresh."},
         "refresh_interval_hours": {"title": "Refresh Interval", "desc": "Time interval (hours) for regular Token refresh."},
         "super_refresh_interval_hours": {"title": "Super Refresh Interval", "desc": "Time interval (hours) for Super Token refresh."},
+        "super_quota_refresh_interval_minutes": {"title": "Super Low-Quota Refresh Interval", "desc": "When ssoSuper quota is below the threshold, refresh it on this schedule in minutes."},
+        "super_quota_refresh_threshold": {"title": "Super Low-Quota Threshold", "desc": "When ssoSuper quota is less than or equal to this threshold, it becomes eligible for scheduled refresh."},
         "fail_threshold": {"title": "Failure Threshold", "desc": "Number of consecutive failures before a Token is marked unavailable."},
         "save_delay_ms": {"title": "Save Delay", "desc": "Delay (ms) for batching Token change writes."},
         "usage_flush_interval_sec": {"title": "Usage Flush Interval", "desc": "Minimum interval (seconds) for writing usage data to database."},

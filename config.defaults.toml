@@ -96,6 +96,10 @@ on_demand_refresh_enabled = true
 on_demand_refresh_min_interval_sec = 300
 # 请求侧按需刷新最大检查 Token 数量
 on_demand_refresh_max_tokens = 100
+# ssoSuper low-quota scheduled refresh interval (minutes)
+super_quota_refresh_interval_minutes = 30
+# ssoSuper low-quota scheduled refresh threshold (quota <= threshold)
+super_quota_refresh_threshold = 500
 # 启用消耗模式（试验性功能，默认关闭）
 consumed_mode_enabled = false
 

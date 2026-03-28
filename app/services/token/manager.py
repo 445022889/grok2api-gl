@@ -965,6 +965,100 @@ class TokenManager:
             )
         )
 
+        return await self._refresh_token_candidates(
+            to_refresh,
+            trigger=trigger,
+            candidate_count=candidate_count,
+        )
+
+    async def refresh_super_tokens_below_threshold(
+        self,
+        *,
+        trigger: str = "super_quota_scheduler",
+        quota_threshold: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, int]:
+        """
+        刷新 ssoSuper 池中 quota 低于阈值的 token。
+
+        Returns:
+            {"checked": int, "refreshed": int, "recovered": int, "expired": int}
+        """
+        if quota_threshold is None:
+            quota_threshold = get_config("token.super_quota_refresh_threshold", 500)
+        try:
+            quota_threshold = int(quota_threshold)
+        except (TypeError, ValueError):
+            quota_threshold = 500
+
+        if quota_threshold <= 0:
+            logger.debug(
+                f"Super quota refresh skipped: trigger={trigger}, invalid threshold={quota_threshold}"
+            )
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        pool = self.pools.get(SUPER_POOL_NAME)
+        if not pool:
+            logger.debug(
+                f"Super quota refresh skipped: trigger={trigger}, pool={SUPER_POOL_NAME} missing"
+            )
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        to_refresh: List[tuple[str, TokenInfo]] = []
+        for token in pool:
+            if token.status != TokenStatus.ACTIVE:
+                continue
+            if int(token.quota or 0) <= quota_threshold:
+                to_refresh.append((SUPER_POOL_NAME, token))
+
+        to_refresh.sort(
+            key=lambda item: (
+                item[1].quota,
+                item[1].last_sync_at or 0,
+                item[1].last_used_at or 0,
+                item[1].created_at or 0,
+            )
+        )
+        candidate_count = len(to_refresh)
+        if max_tokens is not None and max_tokens > 0:
+            to_refresh = to_refresh[:max_tokens]
+
+        if not to_refresh:
+            logger.debug(
+                f"Super quota refresh skipped: trigger={trigger}, no tokens below threshold={quota_threshold}"
+            )
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        logger.info(
+            f"Super quota refresh: trigger={trigger}, threshold={quota_threshold}, "
+            f"candidates={candidate_count}, selected={len(to_refresh)}"
+            + (
+                f", limit={max_tokens}"
+                if max_tokens is not None and max_tokens > 0
+                else ""
+            )
+        )
+
+        return await self._refresh_token_candidates(
+            to_refresh,
+            trigger=trigger,
+            candidate_count=candidate_count,
+        )
+
+    async def _refresh_token_candidates(
+        self,
+        to_refresh: List[tuple[str, TokenInfo]],
+        *,
+        trigger: str,
+        candidate_count: Optional[int] = None,
+    ) -> Dict[str, int]:
+        if not to_refresh:
+            logger.debug(f"Refresh check: trigger={trigger}, no tokens need refresh")
+            return {"checked": 0, "refreshed": 0, "recovered": 0, "expired": 0}
+
+        if candidate_count is None:
+            candidate_count = len(to_refresh)
+
         # 批量并发刷新
         semaphore = asyncio.Semaphore(DEFAULT_REFRESH_CONCURRENCY)
         usage_service = UsageService()
