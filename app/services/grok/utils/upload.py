@@ -8,7 +8,6 @@ import base64
 import hashlib
 import mimetypes
 import re
-import asyncio
 from pathlib import Path
 from typing import AsyncIterator, Optional, Tuple, List
 from urllib.parse import urlparse
@@ -29,10 +28,6 @@ from app.services.reverse.assets_upload import AssetsUploadReverse
 from app.services.reverse.utils.retry import retry_on_status
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.locks import _get_upload_semaphore, _file_lock
-from app.services.token import get_token_manager
-
-
-TOKEN_FAILOVER_WAIT_SECONDS = 3
 
 
 class UploadService:
@@ -278,51 +273,16 @@ class UploadService:
         """
         Upload a batch of files using the same token.
 
-        If upload fails with 403 after internal retries, wait 3 seconds and
-        switch to another token from the same pool, then restart the whole batch.
-
         Returns:
             ([(file_id, file_uri), ...], used_token)
         """
         if not file_inputs:
             return [], token
 
-        token_mgr = await get_token_manager()
-        pool_name = token_mgr.get_pool_name_for_token(token)
-        tried_tokens = {token}
-        current_token = token
-
-        while True:
-            try:
-                results: List[Tuple[str, str]] = []
-                for file_input in file_inputs:
-                    results.append(
-                        await self._upload_single_file(file_input, current_token)
-                    )
-                return results, current_token
-            except UpstreamException as e:
-                status = None
-                if isinstance(e.details, dict):
-                    status = e.details.get("status")
-
-                if status != 403 or not pool_name:
-                    raise
-
-                next_token = token_mgr.get_token(pool_name, exclude=tried_tokens)
-                if not next_token:
-                    logger.warning(
-                        f"Upload token failover skipped: no alternate token in pool={pool_name}"
-                    )
-                    raise
-
-                logger.warning(
-                    f"Upload got 403 after retries, waiting {TOKEN_FAILOVER_WAIT_SECONDS}s "
-                    f"before switching token {current_token[:10]}... -> {next_token[:10]}..."
-                )
-                await asyncio.sleep(TOKEN_FAILOVER_WAIT_SECONDS)
-                current_token = next_token
-                tried_tokens.add(current_token)
-                continue
+        results: List[Tuple[str, str]] = []
+        for file_input in file_inputs:
+            results.append(await self._upload_single_file(file_input, token))
+        return results, token
 
     async def upload_file(self, file_input: str, token: str) -> Tuple[str, str]:
         results, _ = await self.upload_files([file_input], token)
