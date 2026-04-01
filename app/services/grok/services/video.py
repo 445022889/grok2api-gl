@@ -984,10 +984,10 @@ class VideoService:
                         )
                     upload_service = UploadService()
                     try:
-                        for attach_data in image_attachments:
-                            asset_id, file_uri = await upload_service.upload_file(
-                                attach_data, token
-                            )
+                        uploaded, token = await upload_service.upload_files(
+                            image_attachments, token
+                        )
+                        for asset_id, file_uri in uploaded:
                             asset_ids.append(asset_id)
                             image_urls.append(f"https://assets.grok.com/{file_uri}")
                         prompt_text = VideoService._replace_reference_placeholders(

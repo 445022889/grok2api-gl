@@ -341,15 +341,19 @@ class GrokChatService:
         # 上传附件
         file_ids: List[str] = []
         image_ids: List[str] = []
+        active_token = token
         if file_attachments or image_attachments:
             upload_service = UploadService()
             try:
-                for attach_data in file_attachments:
-                    file_id, _ = await upload_service.upload_file(attach_data, token)
+                combined = file_attachments + image_attachments
+                uploaded, active_token = await upload_service.upload_files(
+                    combined, token
+                )
+                file_count = len(file_attachments)
+                for file_id, _ in uploaded[:file_count]:
                     file_ids.append(file_id)
                     logger.debug(f"Attachment uploaded: type=file, file_id={file_id}")
-                for attach_data in image_attachments:
-                    file_id, _ = await upload_service.upload_file(attach_data, token)
+                for file_id, _ in uploaded[file_count:]:
                     image_ids.append(file_id)
                     logger.debug(f"Attachment uploaded: type=image, file_id={file_id}")
             finally:
@@ -366,7 +370,7 @@ class GrokChatService:
             model_config_override["reasoningEffort"] = reasoning_effort
 
         response = await self.chat(
-            token,
+            active_token,
             message,
             grok_model,
             mode,
@@ -377,7 +381,7 @@ class GrokChatService:
         )
 
         prompt_tokens = estimate_prompt_tokens(message)
-        return response, stream, model, prompt_tokens
+        return response, stream, model, prompt_tokens, active_token
 
 
 class ChatService:
@@ -428,9 +432,10 @@ class ChatService:
             tried_tokens.add(token)
 
             try:
+                active_token = token
                 # 请求 Grok
                 service = GrokChatService()
-                response, _, model_name, prompt_tokens = await service.chat_openai(
+                response, _, model_name, prompt_tokens, active_token = await service.chat_openai(
                     token,
                     model,
                     messages,
@@ -448,21 +453,21 @@ class ChatService:
                     logger.debug(f"Processing stream response: model={model}")
                     processor = StreamProcessor(
                         model_name,
-                        token,
+                        active_token,
                         show_think,
                         tools=tools,
                         tool_choice=tool_choice,
                         prompt_tokens=prompt_tokens,
                     )
                     return wrap_stream_with_usage(
-                        processor.process(response), token_mgr, token, model
+                        processor.process(response), token_mgr, active_token, model
                     )
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
                 result = await CollectProcessor(
                     model_name,
-                    token,
+                    active_token,
                     tools=tools,
                     tool_choice=tool_choice,
                     prompt_tokens=prompt_tokens,
@@ -474,7 +479,7 @@ class ChatService:
                         if (model_info and model_info.cost.value == "high")
                         else EffortType.LOW
                     )
-                    await token_mgr.consume(token, effort)
+                    await token_mgr.consume(active_token, effort)
                     logger.info(f"Chat completed: model={model}, effort={effort.value}")
                 except Exception as e:
                     logger.warning(f"Failed to record usage: {e}")
@@ -485,9 +490,9 @@ class ChatService:
 
                 if rate_limited(e):
                     # 配额不足，标记 token 为 cooling 并换 token 重试
-                    await token_mgr.mark_rate_limited(token)
+                    await token_mgr.mark_rate_limited(active_token)
                     logger.warning(
-                        f"Token {token[:10]}... rate limited (429), "
+                        f"Token {active_token[:10]}... rate limited (429), "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
                     )
                     continue

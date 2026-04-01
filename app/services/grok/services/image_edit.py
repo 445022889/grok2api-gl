@@ -93,7 +93,9 @@ class ImageEditService:
 
             tried_tokens.add(current_token)
             try:
-                file_attachments = await self._upload_images(images, current_token)
+                file_attachments, current_token = await self._upload_images(
+                    images, current_token
+                )
                 tool_overrides: Dict[str, Any] | None = None
                 request_overrides = self._build_request_overrides(n)
 
@@ -169,12 +171,12 @@ class ImageEditService:
 
     async def _upload_images(
         self, images: List[str], token: str
-    ) -> List[str]:
+    ) -> Tuple[List[str], str]:
         file_attachments: List[str] = []
         upload_service = UploadService()
         try:
-            for image in images:
-                file_id, _ = await upload_service.upload_file(image, token)
+            uploaded, used_token = await upload_service.upload_files(images, token)
+            for file_id, _ in uploaded:
                 if file_id:
                     file_attachments.append(file_id)
         finally:
@@ -187,7 +189,7 @@ class ImageEditService:
                 code="upload_failed",
             )
 
-        return file_attachments
+        return file_attachments, used_token
 
     async def _collect_images(
         self,
