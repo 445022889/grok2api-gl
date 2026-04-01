@@ -5,9 +5,13 @@ Upload service for assets.grok.com.
 """
 
 import base64
+import binascii
 import hashlib
 import mimetypes
 import re
+import secrets
+import struct
+import zlib
 from pathlib import Path
 from typing import AsyncIterator, Optional, Tuple, List
 from urllib.parse import urlparse
@@ -28,6 +32,9 @@ from app.services.reverse.assets_upload import AssetsUploadReverse
 from app.services.reverse.utils.retry import retry_on_status
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.locks import _get_upload_semaphore, _file_lock
+
+
+IMAGE_403_VARIANT_RETRIES = 2
 
 
 class UploadService:
@@ -218,6 +225,106 @@ class UploadService:
         ext = mime.split("/")[-1] if "/" in mime else "bin"
         return f"file.{ext}", b64, mime
 
+    @staticmethod
+    def _decode_b64_payload(b64: str) -> bytes:
+        try:
+            return base64.b64decode(b64, validate=True)
+        except binascii.Error as e:
+            raise ValidationException(f"Invalid base64 payload: {e}")
+
+    @staticmethod
+    def _encode_b64_payload(raw: bytes) -> str:
+        return base64.b64encode(raw).decode()
+
+    @staticmethod
+    def _png_with_text_chunk(raw: bytes, payload: bytes) -> Optional[bytes]:
+        signature = b"\x89PNG\r\n\x1a\n"
+        if not raw.startswith(signature):
+            return None
+        iend = raw.rfind(b"IEND")
+        if iend < 8:
+            return None
+        chunk_start = iend - 4
+        if chunk_start < len(signature):
+            return None
+        chunk_type = b"tEXt"
+        chunk_data = b"grok2api\x00" + payload
+        chunk_crc = zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF
+        chunk = (
+            struct.pack(">I", len(chunk_data))
+            + chunk_type
+            + chunk_data
+            + struct.pack(">I", chunk_crc)
+        )
+        return raw[:chunk_start] + chunk + raw[chunk_start:]
+
+    @staticmethod
+    def _jpeg_with_comment(raw: bytes, payload: bytes) -> Optional[bytes]:
+        if len(raw) < 2 or raw[:2] != b"\xFF\xD8":
+            return None
+        segment_payload = payload[:65500]
+        comment = b"\xFF\xFE" + struct.pack(">H", len(segment_payload) + 2) + segment_payload
+        return raw[:2] + comment + raw[2:]
+
+    @staticmethod
+    def _gif_with_comment(raw: bytes, payload: bytes) -> Optional[bytes]:
+        if not (raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a")):
+            return None
+        trailer_index = raw.rfind(b"\x3B")
+        if trailer_index == -1:
+            return None
+        blocks = []
+        remaining = payload
+        while remaining:
+            chunk = remaining[:255]
+            remaining = remaining[255:]
+            blocks.append(bytes([len(chunk)]) + chunk)
+        comment_ext = b"\x21\xFE" + b"".join(blocks) + b"\x00"
+        return raw[:trailer_index] + comment_ext + raw[trailer_index:]
+
+    @staticmethod
+    def _webp_with_extra_chunk(raw: bytes, payload: bytes) -> Optional[bytes]:
+        if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WEBP":
+            return None
+        chunk_type = b"G2AP"
+        chunk_data = payload
+        chunk = chunk_type + struct.pack("<I", len(chunk_data)) + chunk_data
+        if len(chunk_data) % 2 == 1:
+            chunk += b"\x00"
+        mutated = raw + chunk
+        riff_size = len(mutated) - 8
+        return mutated[:4] + struct.pack("<I", riff_size) + mutated[8:]
+
+    @classmethod
+    def _build_image_variant(
+        cls, filename: str, b64: str, mime: str, variant_index: int
+    ) -> Optional[Tuple[str, str, str]]:
+        if not isinstance(mime, str) or not mime.startswith("image/"):
+            return None
+
+        raw = cls._decode_b64_payload(b64)
+        nonce = f"grok2api-{variant_index}-{secrets.token_hex(8)}".encode("utf-8")
+
+        mutated = None
+        if mime == "image/png":
+            mutated = cls._png_with_text_chunk(raw, nonce)
+        elif mime in ("image/jpeg", "image/jpg"):
+            mutated = cls._jpeg_with_comment(raw, nonce)
+        elif mime == "image/gif":
+            mutated = cls._gif_with_comment(raw, nonce)
+        elif mime == "image/webp":
+            mutated = cls._webp_with_extra_chunk(raw, nonce)
+        else:
+            return None
+
+        if not mutated or mutated == raw:
+            return None
+
+        logger.warning(
+            f"Upload image variant prepared: filename={filename}, mime={mime}, variant={variant_index}"
+        )
+        return filename, cls._encode_b64_payload(mutated), mime
+
     async def check_format(self, file_input: str) -> Tuple[str, str, str]:
         """Check file input format and return (filename, base64, mime)."""
         if not isinstance(file_input, str) or not file_input.strip():
@@ -244,28 +351,46 @@ class UploadService:
         """
         async with _get_upload_semaphore():
             filename, b64, mime = await self.check_format(file_input)
-
-            logger.debug(
-                f"Upload prepare: filename={filename}, type={mime}, size={len(b64)}"
-            )
-
-            if not b64:
-                raise ValidationException("Invalid file input: empty content")
-
             session = await self.create()
-            response = await AssetsUploadReverse.request(
-                session,
-                token,
-                filename,
-                mime,
-                b64,
-            )
 
-            result = response.json()
-            file_id = result.get("fileMetadataId", "")
-            file_uri = result.get("fileUri", "")
-            logger.info(f"Upload success: {filename} -> {file_id}")
-            return file_id, file_uri
+            current = (filename, b64, mime)
+            for variant_index in range(IMAGE_403_VARIANT_RETRIES + 1):
+                cur_filename, cur_b64, cur_mime = current
+                logger.debug(
+                    f"Upload prepare: filename={cur_filename}, type={cur_mime}, size={len(cur_b64)}, variant={variant_index}"
+                )
+
+                if not cur_b64:
+                    raise ValidationException("Invalid file input: empty content")
+
+                try:
+                    response = await AssetsUploadReverse.request(
+                        session,
+                        token,
+                        cur_filename,
+                        cur_mime,
+                        cur_b64,
+                    )
+                    result = response.json()
+                    file_id = result.get("fileMetadataId", "")
+                    file_uri = result.get("fileUri", "")
+                    logger.info(
+                        f"Upload success: {cur_filename} -> {file_id} (variant={variant_index})"
+                    )
+                    return file_id, file_uri
+                except UpstreamException as e:
+                    status = e.details.get("status") if isinstance(e.details, dict) else None
+                    if status != 403 or variant_index >= IMAGE_403_VARIANT_RETRIES:
+                        raise
+                    next_variant = self._build_image_variant(
+                        cur_filename, cur_b64, cur_mime, variant_index + 1
+                    )
+                    if not next_variant:
+                        raise
+                    logger.warning(
+                        f"Upload failed with 403, retrying with mutated image variant={variant_index + 1}, filename={cur_filename}"
+                    )
+                    current = next_variant
 
     async def upload_files(
         self, file_inputs: List[str], token: str
